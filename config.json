@@ -1,0 +1,19 @@
+{
+  "listen": ":8080",
+  "redis_addr": "localhost:6379",
+  "tenants": [
+    { "name": "dev", "key_sha256": "c2ed58e590dac70908894812c7d38a9fbca1fc385edcc8fcc7d9cb7d967701b7", "rpm": 60, "burst": 10 }
+  ],
+  "routes": [
+    { "name": "auto", "targets": ["groq/llama-3.3-70b-versatile", "ollama/llama3.2", "mock/echo"] },
+    { "name": "chaos", "targets": ["flaky/echo", "mock/echo"] }
+  ],
+  "providers": [
+    { "name": "mock", "type": "mock", "latency_ms": 30 },
+    { "name": "flaky", "type": "mock", "latency_ms": 30, "fail_rate": 0.5 },
+    { "name": "ollama", "type": "openai", "base_url": "http://localhost:11434/v1" },
+    { "name": "groq", "type": "openai", "base_url": "https://api.groq.com/openai/v1", "api_key_env": "GROQ_API_KEY" },
+    { "name": "openrouter", "type": "openai", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY" },
+    { "name": "gemini", "type": "openai", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "api_key_env": "GEMINI_API_KEY" }
+  ]
+}
