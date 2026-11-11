@@ -43,7 +43,7 @@ func (s *Server) cacheKey(r *http.Request, req *chat.Request) string {
 	if err != nil {
 		return ""
 	}
-	return cache.Key(tenantFrom(r.Context()).Name, body)
+	return cache.Key(info(r.Context()).tenant.Name, body)
 }
 
 // cachedChat answers from the cache or, on a miss, from upstream.

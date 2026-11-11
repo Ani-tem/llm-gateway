@@ -7,3 +7,17 @@ services:
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway # local development only
+      POSTGRES_DB: gateway
+    ports:
+      - "5434:5432" # host 5434: 5432 is often taken by a local Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

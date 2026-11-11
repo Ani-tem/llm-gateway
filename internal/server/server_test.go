@@ -48,8 +48,10 @@ func newGatewayWithLimit(t *testing.T, providers map[string]provider.Provider, l
 			server.HashKey(testKey):  {Name: "test", Limit: limit},
 			server.HashKey(otherKey): {Name: "other", Limit: limit},
 		},
-		Limiter: ratelimit.New(rdb),
-		Cache:   cache.New(rdb, cacheTTL),
+		Limiter:     ratelimit.New(rdb),
+		Cache:       cache.New(rdb, cacheTTL),
+		Usage:       testUsage(t),
+		UsageReader: fakeReader{},
 	}))
 	t.Cleanup(gw.Close)
 	return gw, mr

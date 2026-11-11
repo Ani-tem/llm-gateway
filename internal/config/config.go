@@ -20,6 +20,9 @@ import (
 type Config struct {
 	Listen    string `json:"listen"`
 	RedisAddr string `json:"redis_addr"`
+	// Postgres connection string for usage metering; empty disables it. The
+	// DATABASE_URL environment variable overrides it.
+	PostgresURL string `json:"postgres_url"`
 	// How long responses are cached; 0 disables the cache.
 	CacheTTLSeconds int        `json:"cache_ttl_seconds"`
 	Providers       []Provider `json:"providers"`
@@ -68,6 +71,9 @@ func Load(path string) (*Config, error) {
 	}
 	if c.Listen == "" {
 		c.Listen = ":8080"
+	}
+	if env := os.Getenv("DATABASE_URL"); env != "" {
+		c.PostgresURL = env
 	}
 	if c.RedisAddr == "" {
 		c.RedisAddr = "localhost:6379"

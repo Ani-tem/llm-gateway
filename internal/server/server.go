@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"golang.org/x/sync/singleflight"
 
@@ -18,6 +18,7 @@ import (
 	"github.com/Ani-tem/llm-gateway/internal/provider"
 	"github.com/Ani-tem/llm-gateway/internal/ratelimit"
 	"github.com/Ani-tem/llm-gateway/internal/route"
+	"github.com/Ani-tem/llm-gateway/internal/usage"
 )
 
 const maxBodyBytes = 4 << 20 // 4 MB
@@ -33,6 +34,9 @@ type Config struct {
 	Limiter *ratelimit.Limiter
 	// Cache is optional; nil disables response caching.
 	Cache *cache.Cache
+	// Usage and UsageReader are optional; nil disables metering.
+	Usage       *usage.Recorder
+	UsageReader UsageReader
 }
 
 type Server struct {
@@ -41,17 +45,24 @@ type Server struct {
 	limiter *ratelimit.Limiter
 	cache   *cache.Cache
 	flight  singleflight.Group
+
+	usage       *usage.Recorder
+	usageReader UsageReader
 }
 
 // New returns the gateway's handler.
 func New(cfg Config) http.Handler {
-	s := &Server{router: cfg.Router, tenants: cfg.Tenants, limiter: cfg.Limiter, cache: cfg.Cache}
+	s := &Server{
+		router: cfg.Router, tenants: cfg.Tenants, limiter: cfg.Limiter, cache: cfg.Cache,
+		usage: cfg.Usage, usageReader: cfg.UsageReader,
+	}
 	mux := http.NewServeMux()
-	mux.Handle("POST /v1/chat/completions", s.admit(http.HandlerFunc(s.handleChat)))
+	mux.Handle("POST /v1/chat/completions", metered(s.admit(http.HandlerFunc(s.handleChat))))
+	mux.Handle("GET /v1/usage", s.admit(http.HandlerFunc(s.handleUsage)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, "ok\n")
 	})
-	return logRequests(mux)
+	return s.observe(mux)
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +82,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ri := info(r.Context())
+	ri.model, ri.stream = req.Model, req.Stream
+
 	targets := s.router.Resolve(req.Model)
 	if targets == nil {
 		writeError(w, http.StatusNotFound, "invalid_request_error",
@@ -88,12 +102,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeUpstreamError(w, r, err)
 			return
 		}
+		// A hit still records the tokens the answer contains, flagged as
+		// cached, so usage reports can show what the cache saved.
+		ri.usage, _, _ = chat.UsageOf(res.body)
 		w.Header().Set("Content-Type", "application/json")
 		if hit {
+			ri.cached = true
 			w.Header().Set(cacheHeader, "hit")
 		} else {
+			ri.upstream = res.served.String()
 			w.Header().Set(cacheHeader, "miss")
-			w.Header().Set(upstreamHeader, res.served.String())
+			w.Header().Set(upstreamHeader, ri.upstream)
 		}
 		w.Write(res.body)
 		return
@@ -103,20 +122,30 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeUpstreamError(w, r, err)
 		return
 	}
+	ri.upstream = served.String()
+	ri.usage, _, _ = chat.UsageOf(out)
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set(upstreamHeader, served.String())
+	w.Header().Set(upstreamHeader, ri.upstream)
 	w.Write(out)
 }
 
 func (s *Server) stream(w http.ResponseWriter, r *http.Request, req *chat.Request, targets []route.Target) {
 	// Open the upstream stream before writing anything, so a failure here can
 	// still fail over to another target or be reported with a proper status.
+	// Providers report token counts for a stream only when asked, so the
+	// gateway always asks. If the client did not, the extra usage chunk is
+	// read for metering and then withheld, leaving the stream exactly as the
+	// client expects it.
+	clientAskedForUsage := req.EnsureStreamUsage()
+
 	st, served, err := s.router.ChatStream(r.Context(), req, targets)
 	if err != nil {
 		writeUpstreamError(w, r, err)
 		return
 	}
 	defer st.Close()
+	ri := info(r.Context())
+	ri.upstream = served.String()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -139,6 +168,16 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, req *chat.Reques
 				rc.Flush()
 			}
 			return
+		}
+		// Cheap substring check first, so the JSON of ordinary chunks is
+		// never parsed.
+		if bytes.Contains(data, []byte(`"usage"`)) {
+			if u, usageOnly, ok := chat.UsageOf(data); ok {
+				ri.usage = u
+				if usageOnly && !clientAskedForUsage {
+					continue
+				}
+			}
 		}
 		// Flush every chunk: without it net/http buffers and the client sees
 		// the whole answer at once instead of token by token.
@@ -188,28 +227,4 @@ func writeError(w http.ResponseWriter, status int, kind, msg string) {
 func errorJSON(kind, msg string) []byte {
 	b, _ := json.Marshal(chat.ErrorBody{Error: chat.ErrorDetail{Message: msg, Type: kind}})
 	return b
-}
-
-// statusRecorder remembers the status code for the access log.
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (s *statusRecorder) WriteHeader(code int) {
-	s.status = code
-	s.ResponseWriter.WriteHeader(code)
-}
-
-// Unwrap lets http.ResponseController reach the real writer's Flush. Without
-// it, wrapping the writer would silently break streaming.
-func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
-
-func logRequests(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		start := time.Now()
-		next.ServeHTTP(rec, r)
-		slog.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status, "duration", time.Since(start))
-	})
 }

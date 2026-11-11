@@ -21,6 +21,7 @@ import (
 	"github.com/Ani-tem/llm-gateway/internal/ratelimit"
 	"github.com/Ani-tem/llm-gateway/internal/route"
 	"github.com/Ani-tem/llm-gateway/internal/server"
+	"github.com/Ani-tem/llm-gateway/internal/usage"
 )
 
 func main() {
@@ -69,14 +70,31 @@ func run(configPath, listen string) error {
 		responses = cache.New(rdb, time.Duration(cfg.CacheTTLSeconds)*time.Second)
 	}
 
+	serverCfg := server.Config{
+		Router:  route.New(providers, routes),
+		Tenants: tenants,
+		Limiter: ratelimit.New(rdb),
+		Cache:   responses,
+	}
+	if cfg.PostgresURL != "" {
+		startCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		store, err := usage.OpenPostgres(startCtx, cfg.PostgresURL)
+		cancel()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		recorder := usage.NewRecorder(store)
+		// Deferred calls run last-in-first-out: by the time this runs the
+		// HTTP server has stopped, so every event is already queued, and the
+		// store is still open to receive the final flush.
+		defer recorder.Close()
+		serverCfg.Usage, serverCfg.UsageReader = recorder, store
+	}
+
 	srv := &http.Server{
-		Addr: cfg.Listen,
-		Handler: server.New(server.Config{
-			Router:  route.New(providers, routes),
-			Tenants: tenants,
-			Limiter: ratelimit.New(rdb),
-			Cache:   responses,
-		}),
+		Addr:    cfg.Listen,
+		Handler: server.New(serverCfg),
 		// Bounds slow-header attacks. There is deliberately no WriteTimeout:
 		// it would kill long streaming responses.
 		ReadHeaderTimeout: 10 * time.Second,

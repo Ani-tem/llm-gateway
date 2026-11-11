@@ -58,6 +58,7 @@ func (m *Mock) ChatStream(ctx context.Context, req *chat.Request, model string) 
 		id:      m.id(),
 		model:   model,
 		words:   strings.Fields("echo: " + req.LastUserText()),
+		prompt:  len(strings.Fields(req.LastUserText())),
 		latency: m.Latency,
 	}, nil
 }
@@ -78,16 +79,30 @@ type mockStream struct {
 	id      string
 	model   string
 	words   []string
-	next    int // index of the next word; len(words) is the final "stop" chunk
+	next    int // index of the next word; then a "stop" chunk, then a usage chunk
+	prompt  int // prompt word count, for the usage chunk
 	latency time.Duration
 }
 
 func (s *mockStream) Recv() ([]byte, error) {
-	if s.next > len(s.words) {
+	if s.next > len(s.words)+1 {
 		return nil, io.EOF
 	}
 	if err := sleep(s.ctx, s.latency); err != nil {
 		return nil, err
+	}
+	if s.next == len(s.words)+1 {
+		// Like real providers: usage arrives last, in a chunk with no choices.
+		s.next++
+		return json.Marshal(chat.Completion{
+			ID:      s.id,
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   s.model,
+			Choices: []chat.Choice{},
+			Usage: &chat.Usage{PromptTokens: s.prompt, CompletionTokens: len(s.words),
+				TotalTokens: s.prompt + len(s.words)},
+		})
 	}
 	choice := chat.Choice{Delta: &chat.Message{}}
 	switch {

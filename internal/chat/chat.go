@@ -60,6 +60,39 @@ func (r *Request) BodyForModel(model string) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// EnsureStreamUsage makes a streamed request ask the upstream to report token
+// usage, which providers only do on request (as a final extra chunk). It
+// reports whether the client had already asked, so the caller knows whether
+// to forward that chunk or keep it to itself.
+func (r *Request) EnsureStreamUsage() (clientAsked bool) {
+	opts := map[string]json.RawMessage{}
+	json.Unmarshal(r.fields["stream_options"], &opts)
+	if opts == nil { // the client sent "stream_options": null
+		opts = map[string]json.RawMessage{}
+	}
+	json.Unmarshal(opts["include_usage"], &clientAsked)
+	if clientAsked {
+		return true
+	}
+	opts["include_usage"] = json.RawMessage("true")
+	r.fields["stream_options"], _ = json.Marshal(opts)
+	return false
+}
+
+// UsageOf extracts token usage from a response body or a stream chunk.
+// usageOnly is true for the stream's dedicated usage chunk, which carries no
+// choices.
+func UsageOf(data []byte) (u Usage, usageOnly, ok bool) {
+	var v struct {
+		Usage   *Usage            `json:"usage"`
+		Choices []json.RawMessage `json:"choices"`
+	}
+	if json.Unmarshal(data, &v) != nil || v.Usage == nil {
+		return Usage{}, false, false
+	}
+	return *v.Usage, len(v.Choices) == 0, true
+}
+
 // LastUserText returns the text of the last user message, or "" if none.
 func (r *Request) LastUserText() string {
 	var msgs []struct {

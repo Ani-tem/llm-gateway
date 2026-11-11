@@ -1,6 +1,6 @@
 # llm-gateway
 
-A single OpenAI-compatible endpoint in front of many LLM providers, written in Go. Callers authenticate with per-tenant API keys and are rate limited by a Redis token bucket. Providers are retried and failed over behind circuit breakers, and repeated requests are answered from a Redis cache.
+A single OpenAI-compatible endpoint in front of many LLM providers, written in Go. Callers authenticate with per-tenant API keys and are rate limited by a Redis token bucket. Providers are retried and failed over behind circuit breakers, repeated requests are answered from a Redis cache, and every request is metered per tenant in Postgres.
 
 Clients call one URL and pick a provider with a prefix on the model name, or use a route alias that falls over between providers:
 
@@ -19,7 +19,7 @@ Every response carries `X-Gateway-Upstream` naming the target that served it, or
 ## Run
 
 ```sh
-docker compose up -d   # Redis, for rate limiting and caching
+docker compose up -d   # Redis (rate limiting, caching) and Postgres (usage)
 make run
 curl localhost:8080/v1/chat/completions \
   -H 'Authorization: Bearer sk-dev-local' \
@@ -33,10 +33,17 @@ curl -N localhost:8080/v1/chat/completions \
 
 `sk-dev-local` is the sample tenant in `config.json` and is for local use only. Create a real key with `go run ./cmd/gateway keygen` and add the printed hash as a new tenant with its own `rpm` and `burst`.
 
+Each tenant can read its own usage, totalled per model:
+
+```sh
+curl 'localhost:8080/v1/usage?hours=24' -H 'Authorization: Bearer sk-dev-local'
+```
+
 Providers are listed in `config.json`. A provider whose API key env var (for example `GROQ_API_KEY`) is not set is skipped at startup.
 
 ```sh
-make test
+make test              # no external services needed
+make test-integration  # also tests against the Postgres from docker compose
 ```
 
 ## Design decisions
@@ -56,6 +63,10 @@ make test
 - **Exact-match response cache, scoped per tenant.** The key is a SHA-256 of the tenant and the request body, so one tenant can never be served, or detect through timing, another tenant's response. Entries expire after `cache_ttl_seconds`. Streamed requests and failures are not cached, and a client can opt out with `Cache-Control: no-cache`.
 - **Concurrent misses share one upstream call.** `singleflight` collapses identical in-flight requests, which prevents a cache stampede. The shared call is detached from the first caller's cancellation so one client leaving cannot fail the others.
 - **Redis memory is capped** with `allkeys-lru` eviction, so the cache cannot grow without bound.
+- **Usage is an append-only event table, not counters.** One row per request (tenant, model, upstream, status, tokens, latency, cached, stream). Any breakdown is a SQL query later, and cache hits are recorded with their tokens so the saving is measurable.
+- **Metering is off the request path.** Requests push an event onto an in-memory queue; one goroutine writes batches to Postgres with `COPY` every second, and flushes on shutdown. If the queue is full or Postgres is down, events are dropped and counted rather than slowing or failing requests. That trade is fine for dashboards; exact billing would need a durable log in front.
+- **Stream token counts without changing the stream.** Providers report usage for a stream only when asked, so the gateway always adds `stream_options.include_usage`. If the client did not ask, the extra usage chunk is read and withheld.
+- **`/v1/usage` takes the tenant from the API key**, never from a parameter, so tenants cannot read each other's usage.
 - **Rate limiter fails open.** If Redis is unreachable, requests are allowed after a 250 ms wait rather than rejected; a limiter outage should not become a gateway outage. The cache degrades the same way, to "no cache".
 
 ## Roadmap
@@ -64,5 +75,5 @@ make test
 2. ~~Per-tenant API keys and token-bucket rate limiting (Redis)~~
 3. ~~Fallback routing, retries, per-provider circuit breaker~~
 4. ~~Response caching~~
-5. Usage metering per key (Postgres)
+5. ~~Usage metering per key (Postgres)~~
 6. Prometheus + Grafana metrics, k6 load test
