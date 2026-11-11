@@ -1,0 +1,17 @@
+{
+  "listen": ":18080",
+  "metrics_listen": ":9102",
+  "redis_addr": "localhost:6379",
+  "cache_ttl_seconds": 60,
+  "postgres_url": "postgres://gateway:gateway@localhost:5434/gateway",
+  "tenants": [
+    { "name": "loadtest", "key_sha256": "7f6a64e4311c440dc15928e6ebc4ccd07aeffbaa8942e87d43996ac4d81a0aab", "rpm": 6000000, "burst": 100000 }
+  ],
+  "routes": [
+    { "name": "chaos", "targets": ["flaky/echo", "mock/echo"] }
+  ],
+  "providers": [
+    { "name": "mock", "type": "mock", "latency_ms": 20 },
+    { "name": "flaky", "type": "mock", "latency_ms": 20, "fail_rate": 0.3 }
+  ]
+}

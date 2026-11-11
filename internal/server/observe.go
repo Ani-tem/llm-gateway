@@ -4,9 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Ani-tem/llm-gateway/internal/chat"
+	"github.com/Ani-tem/llm-gateway/internal/metrics"
 	"github.com/Ani-tem/llm-gateway/internal/usage"
 )
 
@@ -15,13 +17,14 @@ import (
 // It lives in the request context as a pointer; only the request's own
 // goroutine touches it, so it needs no lock.
 type requestInfo struct {
-	tenant   Tenant
-	metered  bool // counts toward usage (chat requests, not /v1/usage itself)
-	model    string
-	upstream string
-	stream   bool
-	cached   bool
-	usage    chat.Usage
+	tenant    Tenant
+	metered   bool // counts toward usage (chat requests, not /v1/usage itself)
+	model     string
+	upstream  string
+	stream    bool
+	cached    bool
+	cacheMiss bool
+	usage     chat.Usage
 }
 
 type infoKey struct{}
@@ -45,6 +48,22 @@ func (s *Server) observe(next http.Handler) http.Handler {
 		slog.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
 			"duration", elapsed, "tenant", ri.tenant.Name, "model", ri.model,
 			"upstream", ri.upstream, "cached", ri.cached)
+
+		if ri.metered {
+			cache := "none"
+			switch {
+			case ri.cached:
+				cache = "hit"
+			case ri.cacheMiss:
+				cache = "miss"
+			}
+			metrics.Requests.WithLabelValues(ri.tenant.Name, strconv.Itoa(rec.status), cache).Inc()
+			metrics.RequestDuration.WithLabelValues(strconv.FormatBool(ri.stream), cache).Observe(elapsed.Seconds())
+			if !ri.cached {
+				metrics.Tokens.WithLabelValues("prompt").Add(float64(ri.usage.PromptTokens))
+				metrics.Tokens.WithLabelValues("completion").Add(float64(ri.usage.CompletionTokens))
+			}
+		}
 
 		if s.usage != nil && ri.metered && ri.tenant.Name != "" {
 			s.usage.Record(usage.Event{

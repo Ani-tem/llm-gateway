@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Ani-tem/llm-gateway/internal/cache"
@@ -85,6 +87,10 @@ func run(configPath, listen string) error {
 		}
 		defer store.Close()
 		recorder := usage.NewRecorder(store)
+		prometheus.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "gateway_usage_events_dropped_total",
+			Help: "Usage events lost to a full queue or a failed database write.",
+		}, func() float64 { return float64(recorder.Dropped()) }))
 		// Deferred calls run last-in-first-out: by the time this runs the
 		// HTTP server has stopped, so every event is already queued, and the
 		// store is still open to receive the final flush.
@@ -105,9 +111,15 @@ func run(configPath, listen string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	errc := make(chan error, 1)
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", promhttp.Handler())
+	metricsSrv := &http.Server{Addr: cfg.MetricsListen, Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
+	defer metricsSrv.Close()
+
+	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
-	slog.Info("gateway listening", "addr", cfg.Listen, "providers", len(providers), "tenants", len(tenants), "redis", cfg.RedisAddr)
+	go func() { errc <- metricsSrv.ListenAndServe() }()
+	slog.Info("gateway listening", "addr", cfg.Listen, "providers", len(providers), "tenants", len(tenants), "redis", cfg.RedisAddr, "metrics", cfg.MetricsListen)
 
 	select {
 	case err := <-errc:

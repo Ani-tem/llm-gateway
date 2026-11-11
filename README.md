@@ -19,7 +19,7 @@ Every response carries `X-Gateway-Upstream` naming the target that served it, or
 ## Run
 
 ```sh
-docker compose up -d   # Redis (rate limiting, caching) and Postgres (usage)
+docker compose up -d   # Redis, Postgres, Prometheus, Grafana
 make run
 curl localhost:8080/v1/chat/completions \
   -H 'Authorization: Bearer sk-dev-local' \
@@ -45,6 +45,35 @@ Providers are listed in `config.json`. A provider whose API key env var (for exa
 make test              # no external services needed
 make test-integration  # also tests against the Postgres from docker compose
 ```
+
+## Observability
+
+The gateway exposes Prometheus metrics on a separate port (`:9102/metrics`), so they are never reachable through the public API listener. `docker compose up -d` also starts Prometheus (http://localhost:9090) and Grafana (http://localhost:3000, no login, bound to localhost), which opens on a provisioned dashboard: request rate by status, latency percentiles, cache hit ratio, upstream attempts by provider and outcome, circuit breaker state, rate-limit rejections and token throughput.
+
+Metric labels are limited to configured tenants, configured providers and status codes. The model name is client-controlled, so it is deliberately not a label; it would let a client create unbounded time series.
+
+## Load test
+
+`loadtest/chat.js` is a k6 script with three phases at a constant arrival rate: every prompt new, a small set of prompts repeated, and a route whose first provider fails 30% of the time.
+
+```sh
+go run ./cmd/gateway -config loadtest/config.json   # port 18080, mock upstream with 20 ms latency
+RATE=2000 DURATION=15s make loadtest                # k6 runs in Docker
+```
+
+Results on an 8-core Apple Silicon laptop, 2,000 requests/s per phase, with Redis and Postgres in Docker and k6 in Docker:
+
+| Phase | Median | p95 | p99 | Failed |
+|---|---|---|---|---|
+| Uncached (20 ms mock upstream) | 21.5 ms | 22.5 ms | 24.8 ms | 0% |
+| Cached | 1.0 ms | 1.6 ms | 15.6 ms | 0% |
+| Chaos (30% upstream failure) | 21.7 ms | 232 ms | 257 ms | 0% |
+
+- The gateway adds about 1.5 ms to an uncached request at the median. That covers auth, the Redis rate-limit script, the cache lookup and write, and the Docker network hop from k6.
+- Under 30% upstream failure no request failed. The tail is the retry backoff (100 to 200 ms) before a second attempt or failover.
+- All 89,907 requests were metered to Postgres with none dropped, and the gateway used about 52 MB of memory.
+- 2,000 requests/s is the highest rate tested, not a measured ceiling.
+- k6 reported a few 3 s outliers and about 0.1% of scheduled requests not started. The gateway's own log has no request over 262 ms, so these come from k6's first connections through Docker's network to the host.
 
 ## Design decisions
 
@@ -76,4 +105,4 @@ make test-integration  # also tests against the Postgres from docker compose
 3. ~~Fallback routing, retries, per-provider circuit breaker~~
 4. ~~Response caching~~
 5. ~~Usage metering per key (Postgres)~~
-6. Prometheus + Grafana metrics, k6 load test
+6. ~~Prometheus + Grafana metrics, k6 load test~~

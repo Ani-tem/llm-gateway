@@ -20,6 +20,9 @@ import (
 type Config struct {
 	Listen    string `json:"listen"`
 	RedisAddr string `json:"redis_addr"`
+	// Address for the Prometheus /metrics endpoint. It is a separate port so
+	// internal metrics are never exposed on the public API listener.
+	MetricsListen string `json:"metrics_listen"`
 	// Postgres connection string for usage metering; empty disables it. The
 	// DATABASE_URL environment variable overrides it.
 	PostgresURL string `json:"postgres_url"`
@@ -74,6 +77,9 @@ func Load(path string) (*Config, error) {
 	}
 	if env := os.Getenv("DATABASE_URL"); env != "" {
 		c.PostgresURL = env
+	}
+	if c.MetricsListen == "" {
+		c.MetricsListen = ":9102"
 	}
 	if c.RedisAddr == "" {
 		c.RedisAddr = "localhost:6379"

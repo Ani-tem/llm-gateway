@@ -45,6 +45,14 @@ func (b *Breaker) Allow() bool {
 	return true
 }
 
+// Open reports whether the breaker is currently tripped (open or waiting on a
+// probe).
+func (b *Breaker) Open() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.failures >= b.Threshold
+}
+
 // Record reports the outcome of a call that Allow let through.
 func (b *Breaker) Record(ok bool) {
 	b.mu.Lock()

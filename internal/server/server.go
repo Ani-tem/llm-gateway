@@ -110,6 +110,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			ri.cached = true
 			w.Header().Set(cacheHeader, "hit")
 		} else {
+			ri.cacheMiss = true
 			ri.upstream = res.served.String()
 			w.Header().Set(cacheHeader, "miss")
 			w.Header().Set(upstreamHeader, ri.upstream)

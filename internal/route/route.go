@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Ani-tem/llm-gateway/internal/chat"
+	"github.com/Ani-tem/llm-gateway/internal/metrics"
 	"github.com/Ani-tem/llm-gateway/internal/provider"
 )
 
@@ -91,20 +92,26 @@ func try[T any](ctx context.Context, r *Router, targets []Target, call func(prov
 		breaker := r.breakers[t.Provider]
 		for attempt := 1; attempt <= r.MaxAttempts; attempt++ {
 			if !breaker.Allow() {
+				metrics.BreakerSkips.WithLabelValues(t.Provider).Inc()
 				break // open: skip this provider without spending any time on it
 			}
+			start := time.Now()
 			out, err := call(r.providers[t.Provider], t.Model)
+			metrics.UpstreamDuration.WithLabelValues(t.Provider).Observe(time.Since(start).Seconds())
 			if err == nil {
 				breaker.Record(true)
+				observe(t.Provider, "ok", breaker)
 				return out, t, nil
 			}
 			if ctx.Err() != nil {
 				// The caller gave up. That says nothing about the provider's
 				// health, so the breaker is not told.
+				observe(t.Provider, "cancelled", breaker)
 				return zero, t, err
 			}
 			v := classify(err)
 			breaker.Record(!v.unhealthy)
+			observe(t.Provider, v.outcome, breaker)
 			if v.fatal {
 				return zero, t, err
 			}
@@ -121,32 +128,43 @@ func try[T any](ctx context.Context, r *Router, targets []Target, call func(prov
 	return zero, Target{}, lastErr
 }
 
+// observe records one upstream attempt and the breaker state it left behind.
+func observe(provider, outcome string, b *Breaker) {
+	metrics.UpstreamAttempts.WithLabelValues(provider, outcome).Inc()
+	open := 0.0
+	if b.Open() {
+		open = 1
+	}
+	metrics.BreakerOpen.WithLabelValues(provider).Set(open)
+}
+
 type verdict struct {
-	fatal     bool // stop: no provider can serve this request
-	retry     bool // worth trying the same provider again
-	unhealthy bool // counts toward opening the provider's breaker
+	fatal     bool   // stop: no provider can serve this request
+	retry     bool   // worth trying the same provider again
+	unhealthy bool   // counts toward opening the provider's breaker
+	outcome   string // label for the attempts metric
 }
 
 func classify(err error) verdict {
 	var up *provider.UpstreamError
 	if !errors.As(err, &up) {
 		// Connection refused, reset, header timeout: often transient.
-		return verdict{retry: true, unhealthy: true}
+		return verdict{retry: true, unhealthy: true, outcome: "failed"}
 	}
 	switch s := up.Status; {
 	case s == 429:
 		// Alive but rate limiting us. Retrying immediately would only make
 		// it worse, so move straight to the next target.
-		return verdict{}
+		return verdict{outcome: "rate_limited"}
 	case s == 401 || s == 403:
 		// Our key for this provider is bad; a retry cannot fix that.
-		return verdict{unhealthy: true}
+		return verdict{unhealthy: true, outcome: "failed"}
 	case s == 408 || s >= 500:
-		return verdict{retry: true, unhealthy: true}
+		return verdict{retry: true, unhealthy: true, outcome: "failed"}
 	default:
 		// 400, 404, 422...: the request itself is wrong, and the next
 		// provider would reject it too.
-		return verdict{fatal: true}
+		return verdict{fatal: true, outcome: "client_error"}
 	}
 }
 

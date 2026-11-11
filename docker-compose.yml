@@ -6,7 +6,7 @@ services:
     # a missing bucket counts as full.
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   postgres:
     image: postgres:17-alpine
@@ -15,9 +15,32 @@ services:
       POSTGRES_PASSWORD: gateway # local development only
       POSTGRES_DB: gateway
     ports:
-      - "5434:5432" # host 5434: 5432 is often taken by a local Postgres
+      - "127.0.0.1:5434:5432" # host 5434: 5432 is often taken by a local Postgres
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # so it can scrape the gateway on the host (needed on Linux)
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      # No login, for local use only. The port is bound to localhost.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/gateway.json
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
 volumes:
   pgdata:

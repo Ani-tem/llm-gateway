@@ -1,5 +1,6 @@
 {
   "listen": ":8080",
+  "metrics_listen": ":9102",
   "redis_addr": "localhost:6379",
   "cache_ttl_seconds": 300,
   "postgres_url": "postgres://gateway:gateway@localhost:5434/gateway",

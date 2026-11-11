@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Ani-tem/llm-gateway/internal/metrics"
 	"github.com/Ani-tem/llm-gateway/internal/ratelimit"
 )
 
@@ -53,6 +54,7 @@ func (s *Server) admit(next http.Handler) http.Handler {
 			// traffic for a while than turn a limiter outage into a full
 			// gateway outage. The upstream's own limits are still a backstop.
 			slog.Warn("rate limiter unavailable, allowing request", "tenant", tenant.Name, "err", err)
+			metrics.RateLimiterErrors.Inc()
 			next.ServeHTTP(w, r)
 			return
 		}
