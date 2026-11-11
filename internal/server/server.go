@@ -11,6 +11,9 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
+	"github.com/Ani-tem/llm-gateway/internal/cache"
 	"github.com/Ani-tem/llm-gateway/internal/chat"
 	"github.com/Ani-tem/llm-gateway/internal/provider"
 	"github.com/Ani-tem/llm-gateway/internal/ratelimit"
@@ -28,17 +31,21 @@ type Config struct {
 	// Tenants is keyed by HashKey(apiKey).
 	Tenants map[string]Tenant
 	Limiter *ratelimit.Limiter
+	// Cache is optional; nil disables response caching.
+	Cache *cache.Cache
 }
 
 type Server struct {
 	router  *route.Router
 	tenants map[string]Tenant
 	limiter *ratelimit.Limiter
+	cache   *cache.Cache
+	flight  singleflight.Group
 }
 
 // New returns the gateway's handler.
 func New(cfg Config) http.Handler {
-	s := &Server{router: cfg.Router, tenants: cfg.Tenants, limiter: cfg.Limiter}
+	s := &Server{router: cfg.Router, tenants: cfg.Tenants, limiter: cfg.Limiter, cache: cfg.Cache}
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", s.admit(http.HandlerFunc(s.handleChat)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -73,6 +80,22 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if req.Stream {
 		s.stream(w, r, req, targets)
+		return
+	}
+	if key := s.cacheKey(r, req); key != "" {
+		res, hit, err := s.cachedChat(r.Context(), key, req, targets)
+		if err != nil {
+			writeUpstreamError(w, r, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if hit {
+			w.Header().Set(cacheHeader, "hit")
+		} else {
+			w.Header().Set(cacheHeader, "miss")
+			w.Header().Set(upstreamHeader, res.served.String())
+		}
+		w.Write(res.body)
 		return
 	}
 	out, served, err := s.router.Chat(r.Context(), req, targets)

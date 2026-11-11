@@ -18,11 +18,13 @@ import (
 )
 
 type Config struct {
-	Listen    string     `json:"listen"`
-	RedisAddr string     `json:"redis_addr"`
-	Providers []Provider `json:"providers"`
-	Tenants   []Tenant   `json:"tenants"`
-	Routes    []Route    `json:"routes"`
+	Listen    string `json:"listen"`
+	RedisAddr string `json:"redis_addr"`
+	// How long responses are cached; 0 disables the cache.
+	CacheTTLSeconds int        `json:"cache_ttl_seconds"`
+	Providers       []Provider `json:"providers"`
+	Tenants         []Tenant   `json:"tenants"`
+	Routes          []Route    `json:"routes"`
 }
 
 // Route is an alias clients can use as "model". Targets are "provider/model"

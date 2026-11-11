@@ -1,5 +1,9 @@
 services:
   redis:
     image: redis:7-alpine
+    # Cap memory and evict least-recently-used keys when full, so the cache
+    # can never grow without bound. An evicted rate-limit bucket is harmless:
+    # a missing bucket counts as full.
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"

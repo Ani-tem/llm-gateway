@@ -29,8 +29,16 @@ func HashKey(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// How long a request may wait on Redis before we give up and let it through.
-const limiterTimeout = 250 * time.Millisecond
+// How long a request may wait on one Redis call before we give up on it.
+const redisTimeout = 250 * time.Millisecond
+
+type tenantKey struct{}
+
+// tenantFrom returns the tenant that admit authenticated for this request.
+func tenantFrom(ctx context.Context) Tenant {
+	t, _ := ctx.Value(tenantKey{}).(Tenant)
+	return t
+}
 
 // admit authenticates the caller and applies its rate limit before the
 // request reaches a provider.
@@ -43,7 +51,9 @@ func (s *Server) admit(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), limiterTimeout)
+		r = r.WithContext(context.WithValue(r.Context(), tenantKey{}, tenant))
+
+		ctx, cancel := context.WithTimeout(r.Context(), redisTimeout)
 		res, err := s.limiter.Allow(ctx, tenant.Name, tenant.Limit)
 		cancel()
 		if err != nil {

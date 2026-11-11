@@ -15,6 +15,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Ani-tem/llm-gateway/internal/cache"
 	"github.com/Ani-tem/llm-gateway/internal/chat"
 	"github.com/Ani-tem/llm-gateway/internal/provider"
 	"github.com/Ani-tem/llm-gateway/internal/ratelimit"
@@ -22,7 +23,11 @@ import (
 	"github.com/Ani-tem/llm-gateway/internal/server"
 )
 
-const testKey = "test-key"
+const (
+	testKey  = "test-key"
+	otherKey = "other-key"
+	cacheTTL = time.Minute
+)
 
 // newGatewayWithLimit starts a gateway with one tenant (key testKey) whose
 // rate limiter runs against an in-process Redis.
@@ -38,9 +43,13 @@ func newGatewayWithLimit(t *testing.T, providers map[string]provider.Provider, l
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { rdb.Close() })
 	gw := httptest.NewServer(server.New(server.Config{
-		Router:  router,
-		Tenants: map[string]server.Tenant{server.HashKey(testKey): {Name: "test", Limit: limit}},
+		Router: router,
+		Tenants: map[string]server.Tenant{
+			server.HashKey(testKey):  {Name: "test", Limit: limit},
+			server.HashKey(otherKey): {Name: "other", Limit: limit},
+		},
 		Limiter: ratelimit.New(rdb),
+		Cache:   cache.New(rdb, cacheTTL),
 	}))
 	t.Cleanup(gw.Close)
 	return gw, mr

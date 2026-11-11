@@ -1,6 +1,6 @@
 # llm-gateway
 
-A single OpenAI-compatible endpoint in front of many LLM providers, written in Go. Callers authenticate with per-tenant API keys and are rate limited by a Redis token bucket.
+A single OpenAI-compatible endpoint in front of many LLM providers, written in Go. Callers authenticate with per-tenant API keys and are rate limited by a Redis token bucket. Providers are retried and failed over behind circuit breakers, and repeated requests are answered from a Redis cache.
 
 Clients call one URL and pick a provider with a prefix on the model name, or use a route alias that falls over between providers:
 
@@ -14,12 +14,12 @@ auto                           -> route: groq, then ollama, then mock
 chaos                          -> route: a mock that fails half the time, then mock
 ```
 
-Every response carries `X-Gateway-Upstream` naming the target that served it.
+Every response carries `X-Gateway-Upstream` naming the target that served it, or `X-Gateway-Cache: hit` if it came from the cache.
 
 ## Run
 
 ```sh
-docker compose up -d   # Redis, for rate limiting
+docker compose up -d   # Redis, for rate limiting and caching
 make run
 curl localhost:8080/v1/chat/completions \
   -H 'Authorization: Bearer sk-dev-local' \
@@ -53,13 +53,16 @@ make test
 - **Streams fail over only before the first byte.** Once part of an answer has reached the client, switching providers would corrupt it.
 - **Circuit breaker per provider, in memory.** Five consecutive failures open it for 30 s, then a single probe decides whether it closes. A dead provider then costs microseconds instead of a retry cycle per request. State is per instance, so the hot path needs no network call.
 - **A cancelled client request is not a provider failure.** It neither fails over nor counts toward the breaker.
-- **Rate limiter fails open.** If Redis is unreachable, requests are allowed after a 250 ms wait rather than rejected; a limiter outage should not become a gateway outage.
+- **Exact-match response cache, scoped per tenant.** The key is a SHA-256 of the tenant and the request body, so one tenant can never be served, or detect through timing, another tenant's response. Entries expire after `cache_ttl_seconds`. Streamed requests and failures are not cached, and a client can opt out with `Cache-Control: no-cache`.
+- **Concurrent misses share one upstream call.** `singleflight` collapses identical in-flight requests, which prevents a cache stampede. The shared call is detached from the first caller's cancellation so one client leaving cannot fail the others.
+- **Redis memory is capped** with `allkeys-lru` eviction, so the cache cannot grow without bound.
+- **Rate limiter fails open.** If Redis is unreachable, requests are allowed after a 250 ms wait rather than rejected; a limiter outage should not become a gateway outage. The cache degrades the same way, to "no cache".
 
 ## Roadmap
 
 1. ~~OpenAI-compatible endpoint, provider adapters, streaming~~
 2. ~~Per-tenant API keys and token-bucket rate limiting (Redis)~~
 3. ~~Fallback routing, retries, per-provider circuit breaker~~
-4. Response caching
+4. ~~Response caching~~
 5. Usage metering per key (Postgres)
 6. Prometheus + Grafana metrics, k6 load test

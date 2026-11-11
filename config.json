@@ -1,6 +1,7 @@
 {
   "listen": ":8080",
   "redis_addr": "localhost:6379",
+  "cache_ttl_seconds": 300,
   "tenants": [
     { "name": "dev", "key_sha256": "c2ed58e590dac70908894812c7d38a9fbca1fc385edcc8fcc7d9cb7d967701b7", "rpm": 60, "burst": 10 }
   ],

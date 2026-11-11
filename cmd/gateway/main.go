@@ -16,6 +16,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Ani-tem/llm-gateway/internal/cache"
 	"github.com/Ani-tem/llm-gateway/internal/config"
 	"github.com/Ani-tem/llm-gateway/internal/ratelimit"
 	"github.com/Ani-tem/llm-gateway/internal/route"
@@ -63,12 +64,18 @@ func run(configPath, listen string) error {
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer rdb.Close()
 
+	var responses *cache.Cache
+	if cfg.CacheTTLSeconds > 0 {
+		responses = cache.New(rdb, time.Duration(cfg.CacheTTLSeconds)*time.Second)
+	}
+
 	srv := &http.Server{
 		Addr: cfg.Listen,
 		Handler: server.New(server.Config{
 			Router:  route.New(providers, routes),
 			Tenants: tenants,
 			Limiter: ratelimit.New(rdb),
+			Cache:   responses,
 		}),
 		// Bounds slow-header attacks. There is deliberately no WriteTimeout:
 		// it would kill long streaming responses.

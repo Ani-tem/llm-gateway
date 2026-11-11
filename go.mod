@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/redis/go-redis/v9 v9.23.0
+	golang.org/x/sync v0.25.0
 )
 
 require (
